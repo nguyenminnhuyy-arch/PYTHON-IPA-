@@ -32,11 +32,22 @@ jobs:
       - name: Copy stdlib into app resources
         run: |
           set -e
-          LIB=$(find Python.xcframework -maxdepth 3 -type d -path '*/ios-arm64/lib' | head -1)
-          [ -n "$LIB" ] || { echo "Không thấy stdlib"; exit 1; }
-          mkdir -p python
-          cp -R "$LIB" python/lib
-          ls python/lib
+          echo "=== cấu trúc xcframework ==="
+          find Python.xcframework -maxdepth 4 -type d | head -80
+          OS=$(find Python.xcframework -path '*/python3.*/os.py' -not -path '*site-packages*' | head -1)
+          [ -n "$OS" ] || { echo "Không thấy os.py trong xcframework"; exit 1; }
+          STD=$(dirname "$OS"); VER=$(basename "$STD")
+          echo "Stdlib: $STD ($VER)"
+          mkdir -p python/lib
+          cp -R "$STD" "python/lib/$VER"
+          DYN=$(find Python.xcframework -type d -name lib-dynload -path '*/ios-arm64/*' | head -1)
+          echo "Dynload: $DYN"
+          if [ -n "$DYN" ]; then
+            mkdir -p "python/lib/$VER/lib-dynload"
+            cp -R "$DYN"/. "python/lib/$VER/lib-dynload/"
+          fi
+          ls "python/lib/$VER" | head -20
+          test -f "python/lib/$VER/os.py"
 
       - name: Generate Xcode project
         run: |
