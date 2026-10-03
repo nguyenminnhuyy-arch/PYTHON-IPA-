@@ -64,12 +64,20 @@ final class PythonRunner: ObservableObject {
         defer { PyConfig_Clear(&config) }
         config.install_signal_handlers = 0
         config.write_bytecode = 0
-        var st = withUnsafeMutablePointer(to: &config) { p in
-            PyConfig_SetBytesString(p, &p.pointee.home, home)
+        let exe = Bundle.main.executablePath ?? (Bundle.main.bundlePath + "/PyRun")
+        var st = withUnsafeMutablePointer(to: &config) { p -> PyStatus in
+            let s1 = PyConfig_SetBytesString(p, &p.pointee.home, home)
+            if PyStatus_Exception(s1) != 0 { return s1 }
+            return PyConfig_SetBytesString(p, &p.pointee.executable, exe)
         }
         if PyStatus_Exception(st) != 0 { return "⚠️ Python config lỗi: " + msg(st) }
         st = Py_InitializeFromConfig(&config)
         if PyStatus_Exception(st) != 0 { return "⚠️ Python khởi tạo lỗi: " + msg(st) }
+        // Thư mục module riêng: Tệp → Trên iPhone → PyRun → site-packages
+        let site = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("site-packages").path
+        try? fm.createDirectory(atPath: site, withIntermediateDirectories: true)
+        PyRun_SimpleString("import sys\nif r'\(site)' not in sys.path: sys.path.append(r'\(site)')")
         started = true
         #endif
         return nil
