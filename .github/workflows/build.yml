@@ -60,15 +60,63 @@ jobs:
             -sdk iphoneos -configuration Release \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build
+            build > build.log 2>&1 || STATUS=$?
+          echo "=========== CÁC DÒNG LỖI ==========="
+          grep -E "error:" build.log | sort -u | head -40 || true
+          echo "===================================="
+          exit ${STATUS:-0}
 
       - name: Package IPA
         run: |
+          set -e
           mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/PyRun.app Payload/
-          cp -R python Payload/PyRun.app/python
-          ls Payload/PyRun.app/Frameworks
-          ls Payload/PyRun.app/python/lib
+          APP=Payload/PyRun.app
+          cp -R python "$APP/python"
+          VER=$(ls "$APP/python/lib" | grep '^python3' | head -1)
+          DYN="$APP/python/lib/$VER/lib-dynload"
+          echo "Stdlib: $VER"
+          mkdir -p "$APP/Frameworks"
+
+          # Chuyển từng module C (.so) thành framework để iOS/Sideloadly ký được
+          find "$DYN" -name '*.so' > so_list.txt
+          COUNT=0
+          while IFS= read -r SO; do
+            REL="${SO#$DYN/}"
+            NAME=$(echo "$REL" | cut -d. -f1 | tr '/' '.')
+            FW="Frameworks/$NAME.framework"
+            BID="com.minhhuy.pyrun.$(echo "$NAME" | tr '_' '-')"
+            mkdir -p "$APP/$FW"
+            cat > "$APP/$FW/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key><string>en</string>
+            <key>CFBundleExecutable</key><string>$NAME</string>
+            <key>CFBundleIdentifier</key><string>$BID</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundleName</key><string>$NAME</string>
+            <key>CFBundlePackageType</key><string>FMWK</string>
+            <key>CFBundleShortVersionString</key><string>1.0</string>
+            <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>MinimumOSVersion</key><string>17.0</string>
+          </dict>
+          </plist>
+          PLIST
+            mv "$SO" "$APP/$FW/$NAME"
+            install_name_tool -id "@rpath/$FW/$NAME" "$APP/$FW/$NAME"
+            echo "$FW/$NAME" > "${SO%.so}.fwork"
+            FWORK="${SO%.so}.fwork"
+            echo "${FWORK#$APP/}" > "$APP/$FW/$NAME.origin"
+            COUNT=$((COUNT+1))
+          done < so_list.txt
+          echo "Đã chuyển $COUNT module thành framework"
+          ls "$APP/Frameworks" | head -20
+          ls "$DYN" | head -10
+          cat "$DYN"/math.*.fwork
+
           zip -qry PyRun.ipa Payload
 
       - uses: actions/upload-artifact@v4
