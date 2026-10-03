@@ -16,18 +16,26 @@ jobs:
 
       - name: Download Python for iOS (BeeWare)
         run: |
+          set -e
           TAG=$(gh release list --repo beeware/Python-Apple-support --limit 40 \
                 --json tagName -q '.[].tagName' | grep "^${PYVER}-" | head -1)
+          [ -n "$TAG" ] || { echo "Không tìm thấy release Python ${PYVER}"; exit 1; }
           echo "Using tag: $TAG"
           gh release download "$TAG" --repo beeware/Python-Apple-support \
             --pattern "Python-${PYVER}-iOS-support.*.tar.gz"
           tar -xzf Python-${PYVER}-iOS-support.*.tar.gz
-          ls
+          XC=$(find . -maxdepth 3 -name Python.xcframework -type d | head -1)
+          [ -n "$XC" ] || { echo "Không thấy Python.xcframework"; find . -maxdepth 3; exit 1; }
+          [ "$XC" = "./Python.xcframework" ] || mv "$XC" ./Python.xcframework
+          find Python.xcframework -maxdepth 3
 
       - name: Copy stdlib into app resources
         run: |
+          set -e
+          LIB=$(find Python.xcframework -maxdepth 3 -type d -path '*/ios-arm64/lib' | head -1)
+          [ -n "$LIB" ] || { echo "Không thấy stdlib"; exit 1; }
           mkdir -p python
-          cp -R Python.xcframework/ios-arm64/lib python/lib
+          cp -R "$LIB" python/lib
           ls python/lib
 
       - name: Generate Xcode project
@@ -47,6 +55,7 @@ jobs:
         run: |
           mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/PyRun.app Payload/
+          ls Payload/PyRun.app/Frameworks Payload/PyRun.app/python/lib
           zip -qry PyRun.ipa Payload
 
       - uses: actions/upload-artifact@v4
