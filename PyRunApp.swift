@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 #if canImport(Python)
 import Python
@@ -65,6 +66,168 @@ final class PythonRunner: ObservableObject {
     }
 }
 
+// MARK: - Command (REPL) – giữ biến giữa các lệnh
+extension PythonRunner {
+    func runCommand(_ line: String, completion: @escaping (String) -> Void) {
+        queue.async { [self] in
+            #if canImport(Python)
+            start()
+            let tmp = NSTemporaryDirectory() + "cmd.py"
+            try? line.write(toFile: tmp, atomically: true, encoding: .utf8)
+            let wrapper = """
+            import sys, io, traceback
+            if '_ns' not in globals():
+                _ns = {'__name__': '__main__'}
+            _buf = io.StringIO()
+            sys.stdout = sys.stderr = _buf
+            try:
+                _src = open(r'\(tmp)').read()
+                try:
+                    _c = compile(_src, '<console>', 'eval')
+                except SyntaxError:
+                    _c = None
+                if _c is not None:
+                    _r = eval(_c, _ns)
+                    if _r is not None:
+                        print(repr(_r))
+                else:
+                    exec(compile(_src, '<console>', 'exec'), _ns)
+            except BaseException:
+                traceback.print_exc()
+            sys.stdout, sys.stderr = sys.__stdout__, sys.__stderr__
+            _out = _buf.getvalue()
+            """
+            PyRun_SimpleString(wrapper)
+            var result = ""
+            if let main = PyImport_AddModule("__main__"),
+               let dict = PyModule_GetDict(main),
+               let obj = PyDict_GetItemString(dict, "_out"),
+               let c = PyUnicode_AsUTF8(obj) {
+                result = String(cString: c)
+            }
+            DispatchQueue.main.async { completion(result.trimmingCharacters(in: .newlines)) }
+            #else
+            DispatchQueue.main.async { completion("⚠️ Chưa nhúng Python.xcframework.") }
+            #endif
+        }
+    }
+}
+
+// MARK: - Log
+struct LogEntry: Identifiable {
+    enum Kind { case input, output, error, info }
+    let id = UUID()
+    let kind: Kind
+    let text: String
+    let date = Date()
+}
+
+final class ConsoleLog: ObservableObject {
+    static let shared = ConsoleLog()
+    @Published var entries: [LogEntry] = [LogEntry(kind: .info, text: "PyRun console – gõ lệnh Python bên dưới")]
+
+    func add(_ kind: LogEntry.Kind, _ text: String) {
+        guard !text.isEmpty else { return }
+        entries.append(LogEntry(kind: kind, text: text))
+    }
+    func addOutput(_ text: String) {
+        add(text.contains("Traceback (most recent call last)") ? .error : .output, text)
+    }
+    var asText: String { entries.map(\.text).joined(separator: "\n") }
+}
+
+// MARK: - Console screen
+struct ConsoleView: View {
+    @ObservedObject private var log = ConsoleLog.shared
+    @AppStorage("fontSize") private var fontSize = 14.0
+    @State private var input = ""
+    @State private var busy = false
+    @State private var history: [String] = []
+    @State private var histIndex = 0
+    @FocusState private var focused: Bool
+
+    private static let fmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
+
+    var body: some View {
+        ZStack {
+            AuroraBackground()
+            VStack(spacing: 12) {
+                HStack {
+                    Text("Console").font(.largeTitle.bold())
+                    Spacer()
+                    Button { UIPasteboard.general.string = log.asText } label: {
+                        Image(systemName: "doc.on.doc").padding(12)
+                    }.glass(cornerRadius: 18, interactive: true)
+                    Button { log.entries.removeAll() } label: {
+                        Image(systemName: "trash").padding(12)
+                    }.glass(cornerRadius: 18, tint: .red, interactive: true)
+                }
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(log.entries) { e in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text(Self.fmt.string(from: e.date)).font(.caption2).foregroundStyle(.secondary)
+                                    Text(e.kind == .input ? ">>> " + e.text : e.text)
+                                        .font(.system(size: fontSize, design: .monospaced))
+                                        .foregroundStyle(color(e.kind))
+                                        .textSelection(.enabled)
+                                }.id(e.id)
+                            }
+                        }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .glass()
+                    .onChange(of: log.entries.count) { _ in
+                        if let last = log.entries.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Button { step(-1) } label: { Image(systemName: "arrow.up") .padding(12) }
+                        .glass(cornerRadius: 18, interactive: true)
+                    TextField(">>> lệnh Python", text: $input)
+                        .font(.system(size: fontSize, design: .monospaced))
+                        .autocorrectionDisabled().textInputAutocapitalization(.never)
+                        .focused($focused).submitLabel(.send).onSubmit(send)
+                        .padding(12).glass(cornerRadius: 20)
+                    Button(action: send) {
+                        Image(systemName: busy ? "hourglass" : "paperplane.fill").padding(12)
+                    }.glass(cornerRadius: 18, tint: .green, interactive: true).disabled(busy)
+                }
+            }.padding()
+        }
+    }
+
+    private func color(_ k: LogEntry.Kind) -> Color {
+        switch k {
+        case .input: return .cyan
+        case .output: return .primary
+        case .error: return .red
+        case .info: return .secondary
+        }
+    }
+
+    private func step(_ d: Int) {
+        guard !history.isEmpty else { return }
+        histIndex = max(0, min(history.count - 1, histIndex + d))
+        input = history[histIndex]
+    }
+
+    private func send() {
+        let line = input.trimmingCharacters(in: .whitespaces)
+        guard !line.isEmpty, !busy else { return }
+        history.append(line); histIndex = history.count
+        input = ""; busy = true
+        log.add(.input, line)
+        PythonRunner.shared.runCommand(line) { out in
+            log.addOutput(out); busy = false; focused = true
+        }
+    }
+}
+
 // MARK: - Liquid Glass helper (iOS 26, fallback material cho bản cũ)
 extension View {
     @ViewBuilder
@@ -105,6 +268,7 @@ struct RootView: View {
     var body: some View {
         TabView {
             RunView().tabItem { Label("Chạy", systemImage: "play.fill") }
+            ConsoleView().tabItem { Label("Console", systemImage: "terminal.fill") }
             SettingsView().tabItem { Label("Cài đặt", systemImage: "gearshape.fill") }
         }
     }
@@ -140,7 +304,11 @@ struct RunView: View {
 
                 Button {
                     running = true
-                    PythonRunner.shared.run(code) { output = $0; running = false }
+                    ConsoleLog.shared.add(.info, "▶ Chạy \(fileName)")
+                    PythonRunner.shared.run(code) {
+                        output = $0; running = false
+                        ConsoleLog.shared.addOutput($0)
+                    }
                 } label: {
                     HStack {
                         if running { ProgressView() } else { Image(systemName: "play.fill") }
