@@ -10,9 +10,6 @@ targets:
     sources:
       - path: PyRunApp.swift
       - path: PyRun-Bridging-Header.h
-    resources:
-      - path: python
-        type: folder
     dependencies:
       - framework: Python.xcframework
         embed: true
