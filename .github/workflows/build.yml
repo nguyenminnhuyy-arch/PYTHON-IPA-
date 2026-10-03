@@ -55,7 +55,9 @@ jobs:
         run: |
           mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/PyRun.app Payload/
-          ls Payload/PyRun.app/Frameworks Payload/PyRun.app/python/lib
+          cp -R python Payload/PyRun.app/python
+          ls Payload/PyRun.app/Frameworks
+          ls Payload/PyRun.app/python/lib
           zip -qry PyRun.ipa Payload
 
       - uses: actions/upload-artifact@v4
