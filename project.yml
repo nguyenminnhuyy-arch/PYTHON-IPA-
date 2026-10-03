@@ -9,6 +9,7 @@ targets:
     platform: iOS
     sources:
       - path: PyRunApp.swift
+      - path: PyRun-Bridging-Header.h
     resources:
       - path: python
         type: folder
@@ -29,4 +30,6 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.minhhuy.pyrun
         SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: PyRun-Bridging-Header.h
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) HAS_PYTHON"
         ENABLE_USER_SCRIPT_SANDBOXING: NO
