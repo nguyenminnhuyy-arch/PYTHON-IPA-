@@ -16,22 +16,40 @@ final class PythonRunner: ObservableObject {
     private var started = false
     private let queue = DispatchQueue(label: "py.runner")
 
-    private func start() {
+    private func bootstrap() -> String? {
         #if HAS_PYTHON
-        guard !started else { return }
-        let home = Bundle.main.resourcePath! + "/python"
-        setenv("PYTHONHOME", home, 1)
-        setenv("PYTHONPATH", home + "/lib/python3.13:" + home + "/lib/python3.13/lib-dynload", 1)
-        setenv("PYTHONDONTWRITEBYTECODE", "1", 1)
-        Py_Initialize()
+        if started { return nil }
+        let home = Bundle.main.bundlePath + "/python"
+        let fm = FileManager.default
+        let libDir = home + "/lib"
+        guard let ver = (try? fm.contentsOfDirectory(atPath: libDir))?.first(where: { $0.hasPrefix("python3") }),
+              fm.fileExists(atPath: "\(libDir)/\(ver)/os.py") else {
+            let found = (try? fm.contentsOfDirectory(atPath: home))?.joined(separator: ", ") ?? "thư mục không tồn tại"
+            return "⚠️ Không thấy thư viện Python tại \(libDir). Có: \(found)"
+        }
+        func msg(_ st: PyStatus) -> String {
+            st.err_msg != nil ? String(cString: st.err_msg) : "không rõ"
+        }
+        var config = PyConfig()
+        PyConfig_InitIsolatedConfig(&config)
+        defer { PyConfig_Clear(&config) }
+        config.install_signal_handlers = 0
+        config.write_bytecode = 0
+        var st = withUnsafeMutablePointer(to: &config) { p in
+            PyConfig_SetBytesString(p, &p.pointee.home, home)
+        }
+        if PyStatus_Exception(st) != 0 { return "⚠️ Python config lỗi: " + msg(st) }
+        st = Py_InitializeFromConfig(&config)
+        if PyStatus_Exception(st) != 0 { return "⚠️ Python khởi tạo lỗi: " + msg(st) }
         started = true
         #endif
+        return nil
     }
 
     func run(_ code: String, completion: @escaping (String) -> Void) {
         queue.async { [self] in
             #if HAS_PYTHON
-            start()
+            if let err = bootstrap() { DispatchQueue.main.async { completion(err) }; return }
             let tmp = NSTemporaryDirectory() + "main.py"
             try? code.write(toFile: tmp, atomically: true, encoding: .utf8)
             let wrapper = """
@@ -68,7 +86,7 @@ extension PythonRunner {
     func runCommand(_ line: String, completion: @escaping (String) -> Void) {
         queue.async { [self] in
             #if HAS_PYTHON
-            start()
+            if let err = bootstrap() { DispatchQueue.main.async { completion(err) }; return }
             let tmp = NSTemporaryDirectory() + "cmd.py"
             try? line.write(toFile: tmp, atomically: true, encoding: .utf8)
             let wrapper = """
