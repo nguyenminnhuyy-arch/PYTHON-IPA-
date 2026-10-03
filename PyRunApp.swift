@@ -35,6 +35,7 @@ final class PythonRunner: ObservableObject {
         defer { PyConfig_Clear(&config) }
         config.install_signal_handlers = 0
         config.write_bytecode = 0
+        config.utf8_mode = 1
         var st = withUnsafeMutablePointer(to: &config) { p in
             PyConfig_SetBytesString(p, &p.pointee.home, home)
         }
@@ -57,7 +58,7 @@ final class PythonRunner: ObservableObject {
             _buf = io.StringIO()
             sys.stdout = sys.stderr = _buf
             try:
-                exec(compile(open(r'\(tmp)').read(), 'main.py', 'exec'), {'__name__': '__main__'})
+                exec(compile(open(r'\(tmp)', encoding='utf-8').read(), 'main.py', 'exec'), {'__name__': '__main__'})
             except BaseException:
                 traceback.print_exc()
             sys.stdout, sys.stderr = sys.__stdout__, sys.__stderr__
@@ -96,7 +97,7 @@ extension PythonRunner {
             _buf = io.StringIO()
             sys.stdout = sys.stderr = _buf
             try:
-                _src = open(r'\(tmp)').read()
+                _src = open(r'\(tmp)', encoding='utf-8').read()
                 try:
                     _c = compile(_src, '<console>', 'eval')
                 except SyntaxError:
