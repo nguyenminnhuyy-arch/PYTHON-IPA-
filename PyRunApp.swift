@@ -1,9 +1,6 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
-#if canImport(Python)
-import Python
-#endif
 
 // MARK: - App
 @main
@@ -20,7 +17,7 @@ final class PythonRunner: ObservableObject {
     private let queue = DispatchQueue(label: "py.runner")
 
     private func start() {
-        #if canImport(Python)
+        #if HAS_PYTHON
         guard !started else { return }
         let home = Bundle.main.resourcePath! + "/python"
         setenv("PYTHONHOME", home, 1)
@@ -33,7 +30,7 @@ final class PythonRunner: ObservableObject {
 
     func run(_ code: String, completion: @escaping (String) -> Void) {
         queue.async { [self] in
-            #if canImport(Python)
+            #if HAS_PYTHON
             start()
             let tmp = NSTemporaryDirectory() + "main.py"
             try? code.write(toFile: tmp, atomically: true, encoding: .utf8)
@@ -70,7 +67,7 @@ final class PythonRunner: ObservableObject {
 extension PythonRunner {
     func runCommand(_ line: String, completion: @escaping (String) -> Void) {
         queue.async { [self] in
-            #if canImport(Python)
+            #if HAS_PYTHON
             start()
             let tmp = NSTemporaryDirectory() + "cmd.py"
             try? line.write(toFile: tmp, atomically: true, encoding: .utf8)
@@ -282,6 +279,7 @@ struct RunView: View {
     @State private var running = false
     @State private var picking = false
     @State private var fileName = "main.py"
+    @State private var errorText: String?
 
     var body: some View {
         ZStack {
@@ -328,12 +326,29 @@ struct RunView: View {
             }
             .padding()
         }
-        .fileImporter(isPresented: $picking, allowedContentTypes: [UTType(filenameExtension: "py") ?? .plainText, .plainText]) { res in
-            guard case .success(let url) = res else { return }
-            let ok = url.startAccessingSecurityScopedResource()
-            defer { if ok { url.stopAccessingSecurityScopedResource() } }
-            if let s = try? String(contentsOf: url, encoding: .utf8) { code = s; fileName = url.lastPathComponent }
+        .fileImporter(isPresented: $picking, allowedContentTypes: [.item]) { res in
+            switch res {
+            case .failure(let e):
+                errorText = e.localizedDescription
+            case .success(let url):
+                let ok = url.startAccessingSecurityScopedResource()
+                defer { if ok { url.stopAccessingSecurityScopedResource() } }
+                var coordErr: NSError?
+                var readErr: Error?
+                NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordErr) { u in
+                    do {
+                        let data = try Data(contentsOf: u)
+                        let s = String(decoding: data, as: UTF8.self)
+                        code = s; fileName = url.lastPathComponent
+                    } catch { readErr = error }
+                }
+                if let e = coordErr { errorText = e.localizedDescription }
+                else if let e = readErr { errorText = e.localizedDescription }
+            }
         }
+        .alert("Không mở được file", isPresented: Binding(get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(errorText ?? "") }
     }
 }
 
