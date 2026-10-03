@@ -10,11 +10,35 @@ struct PyRunApp: App {
     }
 }
 
+// MARK: - Luồng Python riêng (stack lớn, luôn cùng một luồng)
+final class PyWorker {
+    private let cond = NSCondition()
+    private var jobs: [() -> Void] = []
+    init() {
+        let t = Thread { [self] in
+            while true {
+                cond.lock()
+                while jobs.isEmpty { cond.wait() }
+                let job = jobs.removeFirst()
+                cond.unlock()
+                job()
+            }
+        }
+        t.stackSize = 16 * 1024 * 1024
+        t.qualityOfService = .userInitiated
+        t.name = "py.worker"
+        t.start()
+    }
+    func async(_ job: @escaping () -> Void) {
+        cond.lock(); jobs.append(job); cond.signal(); cond.unlock()
+    }
+}
+
 // MARK: - Python runner
 final class PythonRunner: ObservableObject {
     static let shared = PythonRunner()
     private var started = false
-    private let queue = DispatchQueue(label: "py.runner")
+    private let queue = PyWorker()
 
     private func bootstrap() -> String? {
         #if HAS_PYTHON
@@ -294,15 +318,77 @@ struct RootView: View {
     }
 }
 
+// MARK: - Chọn file (UIKit trực tiếp, sao chép về app)
+final class PickerHelper: NSObject, UIDocumentPickerDelegate {
+    static let shared = PickerHelper()
+    private var onPick: ((URL) -> Void)?
+
+    func present(_ cb: @escaping (URL) -> Void) {
+        onPick = cb
+        let p = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        p.delegate = self
+        p.allowsMultipleSelection = false
+        top()?.present(p, animated: true)
+    }
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        if let u = urls.first { onPick?(u) }
+    }
+    private func top() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        var vc = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        while let p = vc?.presentedViewController { vc = p }
+        return vc
+    }
+}
+
+// MARK: - Danh sách file trong thư mục PyRun (app Tệp → Trên iPhone → PyRun)
+struct ScriptsView: View {
+    var onPick: (URL) -> Void
+    @State private var files: [URL] = []
+    private var dir: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if files.isEmpty {
+                    Text("Chưa có file .py. Mở app Tệp → Trên iPhone → PyRun, chép file .py vào đây rồi quay lại.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(files, id: \.self) { f in
+                    Button(f.lastPathComponent) { onPick(f) }
+                }
+                .onDelete { idx in
+                    idx.forEach { try? FileManager.default.removeItem(at: files[$0]) }
+                    reload()
+                }
+            }
+            .navigationTitle("Thư mục PyRun")
+            .onAppear(perform: reload)
+        }
+    }
+    private func reload() {
+        let all = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        files = all.filter { $0.pathExtension.lowercased() == "py" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+}
+
 // MARK: - Run screen
 struct RunView: View {
     @AppStorage("fontSize") private var fontSize = 14.0
     @State private var code = "print('Xin chào từ Python 🐍')\nfor i in range(3):\n    print(i * i)"
     @State private var output = ""
     @State private var running = false
-    @State private var picking = false
+    @State private var showScripts = false
     @State private var fileName = "main.py"
     @State private var errorText: String?
+
+    private func load(_ url: URL) {
+        do {
+            let data = try Data(contentsOf: url)
+            code = String(decoding: data, as: UTF8.self)
+            fileName = url.lastPathComponent
+        } catch { errorText = error.localizedDescription }
+    }
 
     var body: some View {
         ZStack {
@@ -311,7 +397,13 @@ struct RunView: View {
                 HStack {
                     Text("PyRun").font(.largeTitle.bold())
                     Spacer()
-                    Button { picking = true } label: {
+                    Menu {
+                        Button { PickerHelper.shared.present { load($0) } } label: { Label("Chọn từ Files", systemImage: "folder") }
+                        Button { showScripts = true } label: { Label("Thư mục PyRun", systemImage: "externaldrive") }
+                        Button {
+                            if let t = UIPasteboard.general.string { code = t; fileName = "clipboard.py" }
+                        } label: { Label("Dán từ clipboard", systemImage: "doc.on.clipboard") }
+                    } label: {
                         Label("Mở .py", systemImage: "doc.badge.plus").padding(.horizontal, 14).padding(.vertical, 10)
                     }.glass(cornerRadius: 20, interactive: true)
                 }
@@ -349,26 +441,7 @@ struct RunView: View {
             }
             .padding()
         }
-        .fileImporter(isPresented: $picking, allowedContentTypes: [.item]) { res in
-            switch res {
-            case .failure(let e):
-                errorText = e.localizedDescription
-            case .success(let url):
-                let ok = url.startAccessingSecurityScopedResource()
-                defer { if ok { url.stopAccessingSecurityScopedResource() } }
-                var coordErr: NSError?
-                var readErr: Error?
-                NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordErr) { u in
-                    do {
-                        let data = try Data(contentsOf: u)
-                        let s = String(decoding: data, as: UTF8.self)
-                        code = s; fileName = url.lastPathComponent
-                    } catch { readErr = error }
-                }
-                if let e = coordErr { errorText = e.localizedDescription }
-                else if let e = readErr { errorText = e.localizedDescription }
-            }
-        }
+        .sheet(isPresented: $showScripts) { ScriptsView { load($0); showScripts = false } }
         .alert("Không mở được file", isPresented: Binding(get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(errorText ?? "") }
