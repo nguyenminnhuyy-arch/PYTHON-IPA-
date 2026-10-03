@@ -30,12 +30,16 @@ final class PythonRunner: ObservableObject {
         func msg(_ st: PyStatus) -> String {
             st.err_msg != nil ? String(cString: st.err_msg) : "không rõ"
         }
+        var pre = PyPreConfig()
+        PyPreConfig_InitIsolatedConfig(&pre)
+        pre.utf8_mode = 1
+        let pst = Py_PreInitialize(&pre)
+        if PyStatus_Exception(pst) != 0 { return "⚠️ Python preinit lỗi: " + msg(pst) }
         var config = PyConfig()
         PyConfig_InitIsolatedConfig(&config)
         defer { PyConfig_Clear(&config) }
         config.install_signal_handlers = 0
         config.write_bytecode = 0
-        config.utf8_mode = 1
         var st = withUnsafeMutablePointer(to: &config) { p in
             PyConfig_SetBytesString(p, &p.pointee.home, home)
         }
